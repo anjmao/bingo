@@ -9,45 +9,39 @@ import (
 	"testing"
 
 	"github.com/saibing/bingo/langserver/internal/source"
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 func TestAppendNode(t *testing.T) {
-	f, fset, _ := loadViewFile(t)
+	testLineNum := 8
+	f, fset, fast := loadViewFile(t, "/Users/anjmao/s/bingo/", "/Users/anjmao/s/bingo/testdata/astappend.go")
 
-	// ast.Inspect(fast, func(n ast.Node) bool {
-	// 	if n != nil {
-	// 		fmt.Println("pos", fset.Position(n.Pos()).Line, n)
-	// 	}
-	// 	return true
-	// })
+	fmt.Println("-----original file ast-----")
+	ast.Print(fset, fast)
 
-	start, end, err := getLineOffsetRange(f.content, 8)
-	if err != nil {
-		t.Fatalf("could not get line offset range: %v", err)
-	}
+	p := &nodeLineParser{fset, fast}
 
-	lineContent := strings.TrimSpace(string(f.content[start:end]))
-
-	expr, err := parser.ParseExpr(lineContent)
+	newNode, err := p.parseLineExpr(f.content, testLineNum)
 	if err != nil {
 		t.Fatalf("could not parse line expression: %v", err)
 	}
 
-	ast.Print(fset, expr)
+	fmt.Println("-----new line node ast-----")
+	ast.Print(fset, newNode)
 
-	fmt.Println("line content", lineContent)
+	p.replaceNode(testLineNum+1, newNode)
 
-	// TODO: now as we have full line ast we replace this block inside actual file AST
+	fmt.Println("-----file ast after replace-----")
+	ast.Print(fset, fast)
 }
 
-// TODO: pass test file path
-func loadViewFile(t *testing.T) (*File, *token.FileSet, *ast.File) {
+func loadViewFile(t *testing.T, rootDir, sourceFile string) (*File, *token.FileSet, *ast.File) {
 	v := NewView()
 	v.getLoadDir = func(_ string) string {
-		return "/Users/anjmao/s/bingo/"
+		return rootDir
 	}
 
-	f := v.GetFile(source.ToURI("/Users/anjmao/s/bingo/testdata/astappend.go"))
+	f := v.GetFile(source.ToURI(sourceFile))
 
 	fset, err := f.GetFileSet()
 	if err != nil {
@@ -62,8 +56,40 @@ func loadViewFile(t *testing.T) (*File, *token.FileSet, *ast.File) {
 	return f, fset, fast
 }
 
-// TODO(anjmao): move this func to view.go onces it is done
-func getLineOffsetRange(contents []byte, posLine int) (int, int, error) {
+type nodeLineParser struct {
+	fset *token.FileSet
+	ast  *ast.File
+}
+
+func (p *nodeLineParser) replaceNode(lineNum int, newNode ast.Node) {
+	astutil.Apply(p.ast, func(c *astutil.Cursor) bool {
+		n := c.Node()
+		if n == nil {
+			return false
+		}
+		line := p.fset.Position(n.Pos()).Line
+		if line != lineNum {
+			return true
+		}
+		if _, ok := n.(*ast.CallExpr); ok {
+			// ast.Print(p.fset, ex)
+			c.Replace(newNode)
+			return false
+		}
+		return true
+	}, nil)
+}
+
+func (p *nodeLineParser) parseLineExpr(contents []byte, posLine int) (ast.Node, error) {
+	start, end, err := p.getLineOffsetRange(contents, posLine)
+	if err != nil {
+		return nil, err
+	}
+	lineContent := strings.TrimSpace(string(contents[start:end]))
+	return parser.ParseExpr(lineContent)
+}
+
+func (p *nodeLineParser) getLineOffsetRange(contents []byte, posLine int) (int, int, error) {
 	line := 0
 	col := 0
 	start := 0
@@ -95,3 +121,4 @@ func getLineOffsetRange(contents []byte, posLine int) (int, int, error) {
 
 	return 0, 0, fmt.Errorf("file only has %d lines", line+1)
 }
+
