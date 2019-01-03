@@ -2,13 +2,13 @@ package cache
 
 import (
 	"fmt"
-	"github.com/saibing/bingo/langserver/internal/source"
-	"github.com/saibing/bingo/pkg/lsp"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
+
+	"github.com/saibing/bingo/langserver/internal/source"
 )
 
 func TestAppendNode(t *testing.T) {
@@ -21,14 +21,9 @@ func TestAppendNode(t *testing.T) {
 	// 	return true
 	// })
 
-	start, ok, why := offsetForPosition(f.content, lsp.Position{Line: 8, Character: 0})
-	if !ok {
-		t.Fatalf("could not get offset start position: %v", why)
-	}
-
-	end, ok, why := offsetForPosition(f.content, lsp.Position{Line: 8, Character: 18})
-	if !ok {
-		t.Fatalf("could not get offset end position: %v", why)
+	start, end, err := getLineOffsetRange(f.content, 8)
+	if err != nil {
+		t.Fatalf("could not get line offset range: %v", err)
 	}
 
 	lineContent := strings.TrimSpace(string(f.content[start:end]))
@@ -67,21 +62,28 @@ func loadViewFile(t *testing.T) (*File, *token.FileSet, *ast.File) {
 	return f, fset, fast
 }
 
-// TODO(anjmao): remove this func from test
-func offsetForPosition(contents []byte, p lsp.Position) (offset int, valid bool, whyInvalid string) {
+// TODO(anjmao): move this func to view.go onces it is done
+func getLineOffsetRange(contents []byte, posLine int) (int, int, error) {
 	line := 0
 	col := 0
-	// TODO(sqs): count chars, not bytes, per LSP. does that mean we
-	// need to maintain 2 separate counters since we still need to
-	// return the offset as bytes?
+	start := 0
+	end := 0
+	offset := 0
 	for _, b := range contents {
 		// fmt.Println("line", line, "col", col, "char", string(b))
-		if line == p.Line && col == p.Character {
-			return offset, true, ""
+		if line == posLine && start == 0 {
+			start = offset
 		}
-		if (line == p.Line && col > p.Character) || line > p.Line {
-			return 0, false, fmt.Sprintf("character %d is beyond line %d boundary", p.Character, p.Line)
+
+		if line != posLine && start != 0 {
+			end = offset
+			return start, end, nil
 		}
+
+		if line > posLine {
+			return 0, 0, fmt.Errorf("character is beyond line %d boundary", posLine)
+		}
+
 		offset++
 		if b == '\n' {
 			line++
@@ -90,11 +92,6 @@ func offsetForPosition(contents []byte, p lsp.Position) (offset int, valid bool,
 			col++
 		}
 	}
-	if line == p.Line && col == p.Character {
-		return offset, true, ""
-	}
-	if line == 0 {
-		return 0, false, fmt.Sprintf("character %d is beyond first line boundary", p.Character)
-	}
-	return 0, false, fmt.Sprintf("file only has %d lines", line+1)
+
+	return 0, 0, fmt.Errorf("file only has %d lines", line+1)
 }
