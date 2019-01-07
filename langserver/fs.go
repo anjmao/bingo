@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/saibing/bingo/langserver/internal/cache"
 	"github.com/saibing/bingo/langserver/internal/source"
 	"github.com/saibing/bingo/pkg/lsp"
@@ -76,7 +77,8 @@ func newOverlay(conn *jsonrpc2.Conn, diagnosticsDisabled bool) *overlay {
 }
 
 func (h *overlay) didOpen(ctx context.Context, params *lsp.DidOpenTextDocumentParams) {
-	h.cacheAndDiagnoseFile(ctx, params.TextDocument.URI, []byte(params.TextDocument.Text))
+	f := h.cacheFile(params.TextDocument.URI, []byte(params.TextDocument.Text))
+	h.diagnoseFile(ctx, params.TextDocument.URI, f)
 }
 
 func (h *overlay) didChange(ctx context.Context, params *lsp.DidChangeTextDocumentParams) error {
@@ -94,7 +96,8 @@ func (h *overlay) didChange(ctx context.Context, params *lsp.DidChangeTextDocume
 		return err
 	}
 
-	h.cacheAndDiagnoseFile(ctx, params.TextDocument.URI, contents)
+	f := h.cacheFile(params.TextDocument.URI, contents)
+	h.diagnoseFile(ctx, params.TextDocument.URI, f)
 	return nil
 }
 
@@ -111,17 +114,21 @@ func (h *overlay) get(uri lsp.DocumentURI) ([]byte, bool) {
 	return nil, false
 }
 
-func (h *overlay) cacheAndDiagnoseFile(ctx context.Context, uri lsp.DocumentURI, text []byte) {
+func (h *overlay) cacheFile(uri lsp.DocumentURI, text []byte) *cache.File {
 	sourceURI := source.FromDocumentURI(uri)
 	f := h.view.GetFile(sourceURI)
 	f.SetContent(text)
+	return f
+}
 
+func (h *overlay) diagnoseFile(ctx context.Context, uri lsp.DocumentURI, f *cache.File) {
 	if h.diagnosticsDisabled {
 		return
 	}
 
-	go func() {
+	go func(_uri lsp.DocumentURI) {
 		reports, err := diagnostics(f)
+		sourceURI := source.FromDocumentURI(_uri)
 		if err == nil {
 			for filename, diagnostics := range reports {
 				fileURI := source.ToURI(filename)
@@ -136,7 +143,7 @@ func (h *overlay) cacheAndDiagnoseFile(ctx context.Context, uri lsp.DocumentURI,
 				h.conn.Notify(ctx, "textDocument/publishDiagnostics", params)
 			}
 		}
-	}()
+	}(uri)
 }
 
 // applyContentChanges updates `contents` based on `changes`
