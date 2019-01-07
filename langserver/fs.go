@@ -41,7 +41,6 @@ func (h *HandlerShared) handleFileSystemRequest(ctx context.Context, req *jsonrp
 		if err := json.Unmarshal(*req.Params, &params); err != nil {
 			return err
 		}
-
 		return overlay.didChange(ctx, &params)
 
 	case "textDocument/didClose":

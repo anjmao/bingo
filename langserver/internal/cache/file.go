@@ -7,11 +7,13 @@ package cache
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"io/ioutil"
 
 	"github.com/saibing/bingo/langserver/internal/source"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -58,11 +60,24 @@ func (f *File) DoPartialUpdate(content []byte, params *PartialUpdateParams) {
 }
 
 func (f *File) doPartialUpdate(content []byte, params *PartialUpdateParams) {
+	newNode, err := parser.ParseExpr(params.LineContent)
+	if err != nil {
+		f.setContent(content)
+		return
+	}
+
+	// new node should be CallExpr
+	// TODO(anjmao): add support for other node types
+	if _, ok := newNode.(*ast.CallExpr); !ok {
+		f.setContent(content)
+		return
+	}
+
 	f.content = content
 	// TODO(anjmao): clear ast and token only if it's not possible to update it
-	f.ast = nil
-	f.token = nil
-	f.pkg = nil
+	f.replaceNodes(newNode, params.LineNum)
+	f.token.SetLinesForContent(content)
+
 	// and we might need to update the overlay
 	switch {
 	case f.active && content == nil:
@@ -79,6 +94,27 @@ func (f *File) doPartialUpdate(content []byte, params *PartialUpdateParams) {
 			f.view.Config.Overlay[filename] = f.content
 		}
 	}
+}
+
+func (f *File) replaceNodes(newNode ast.Node, lineNum int) {
+	astutil.Apply(f.ast, func(c *astutil.Cursor) bool {
+		n := c.Node()
+		if n == nil {
+			return false
+		}
+		line := f.token.Position(n.Pos()).Line
+		// go deeper until we find first CallExpr node on given line
+		if line != lineNum {
+			return true
+		}
+		if _, ok := n.(*ast.CallExpr); ok {
+			// ast.Print(p.fset, ex)
+			c.Replace(newNode)
+			return false
+		}
+		return true
+	}, nil)
+
 }
 
 func (f *File) setContent(content []byte) {
