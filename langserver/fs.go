@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/saibing/bingo/langserver/internal/cache"
 	"github.com/saibing/bingo/langserver/internal/source"
@@ -77,7 +78,7 @@ func newOverlay(conn *jsonrpc2.Conn, diagnosticsDisabled bool) *overlay {
 }
 
 func (h *overlay) didOpen(ctx context.Context, params *lsp.DidOpenTextDocumentParams) {
-	f := h.cacheFile(params.TextDocument.URI, []byte(params.TextDocument.Text))
+	f := h.setFileContent(params.TextDocument.URI, []byte(params.TextDocument.Text))
 	h.diagnoseFile(ctx, params.TextDocument.URI, f)
 }
 
@@ -96,7 +97,18 @@ func (h *overlay) didChange(ctx context.Context, params *lsp.DidChangeTextDocume
 		return err
 	}
 
-	f := h.cacheFile(params.TextDocument.URI, contents)
+	var f *cache.File
+	if len(params.ContentChanges) == 1 && params.ContentChanges[0].Range != nil {
+		lineNum := params.ContentChanges[0].Range.Start.Line
+		start, end, err := getLineOffsetRange(contents, lineNum)
+		if err != nil {
+			return err
+		}
+		lineContent := strings.TrimSpace(string(contents[start:end]))
+		f = h.doFilePartialUpdate(params.TextDocument.URI, contents, lineContent, lineNum)
+	} else {
+		f = h.setFileContent(params.TextDocument.URI, contents)
+	}
 	h.diagnoseFile(ctx, params.TextDocument.URI, f)
 	return nil
 }
@@ -114,10 +126,20 @@ func (h *overlay) get(uri lsp.DocumentURI) ([]byte, bool) {
 	return nil, false
 }
 
-func (h *overlay) cacheFile(uri lsp.DocumentURI, text []byte) *cache.File {
+func (h *overlay) setFileContent(uri lsp.DocumentURI, text []byte) *cache.File {
 	sourceURI := source.FromDocumentURI(uri)
 	f := h.view.GetFile(sourceURI)
 	f.SetContent(text)
+	return f
+}
+
+func (h *overlay) doFilePartialUpdate(uri lsp.DocumentURI, text []byte, lineContent string, lineNum int) *cache.File {
+	sourceURI := source.FromDocumentURI(uri)
+	f := h.view.GetFile(sourceURI)
+	f.DoPartialUpdate(text, &cache.PartialUpdateParams{
+		LineContent: lineContent,
+		LineNum:     lineNum,
+	})
 	return f
 }
 
@@ -126,9 +148,9 @@ func (h *overlay) diagnoseFile(ctx context.Context, uri lsp.DocumentURI, f *cach
 		return
 	}
 
-	go func(_uri lsp.DocumentURI) {
+	go func() {
 		reports, err := diagnostics(f)
-		sourceURI := source.FromDocumentURI(_uri)
+		sourceURI := source.FromDocumentURI(uri)
 		if err == nil {
 			for filename, diagnostics := range reports {
 				fileURI := source.ToURI(filename)
@@ -143,7 +165,7 @@ func (h *overlay) diagnoseFile(ctx context.Context, uri lsp.DocumentURI, f *cach
 				h.conn.Notify(ctx, "textDocument/publishDiagnostics", params)
 			}
 		}
-	}(uri)
+	}()
 }
 
 // applyContentChanges updates `contents` based on `changes`
@@ -209,4 +231,37 @@ func offsetForPosition(contents []byte, p lsp.Position) (offset int, valid bool,
 		return 0, false, fmt.Sprintf("character %d is beyond first line boundary", p.Character)
 	}
 	return 0, false, fmt.Sprintf("file only has %d lines", line+1)
+}
+
+func getLineOffsetRange(contents []byte, posLine int) (int, int, error) {
+	line := 0
+	col := 0
+	start := 0
+	end := 0
+	offset := 0
+	for _, b := range contents {
+		// fmt.Println("line", line, "col", col, "char", string(b))
+		if line == posLine && start == 0 {
+			start = offset
+		}
+
+		if line != posLine && start != 0 {
+			end = offset
+			return start, end, nil
+		}
+
+		if line > posLine {
+			return 0, 0, fmt.Errorf("character is beyond line %d boundary", posLine)
+		}
+
+		offset++
+		if b == '\n' {
+			line++
+			col = 0
+		} else {
+			col++
+		}
+	}
+
+	return 0, 0, fmt.Errorf("file only has %d lines", line+1)
 }

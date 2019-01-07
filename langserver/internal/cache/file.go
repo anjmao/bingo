@@ -6,10 +6,11 @@ package cache
 
 import (
 	"fmt"
-	"github.com/saibing/bingo/langserver/internal/source"
 	"go/ast"
 	"go/token"
 	"io/ioutil"
+
+	"github.com/saibing/bingo/langserver/internal/source"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -25,6 +26,12 @@ type File struct {
 	pkg     *packages.Package
 }
 
+// PartialUpdateParams holds information for partial file ast update
+type PartialUpdateParams struct {
+	LineNum     int
+	LineContent string
+}
+
 // SetContent sets the overlay contents for a file.
 // Setting it to nil will revert it to the on disk contents, and remove it
 // from the active set.
@@ -36,6 +43,42 @@ func (f *File) SetContent(content []byte) {
 	}
 
 	f.setContent(content)
+}
+
+// DoPartialUpdate sets the overlay contents for a file and tries to update given line ast nodes.
+// If update is not possible ast and token is cleared.
+func (f *File) DoPartialUpdate(content []byte, params *PartialUpdateParams) {
+	f.view.mu.Lock()
+	defer f.view.mu.Unlock()
+	if f.content != nil && content != nil && string(f.content) == string(content) {
+		return
+	}
+
+	f.doPartialUpdate(content, params)
+}
+
+func (f *File) doPartialUpdate(content []byte, params *PartialUpdateParams) {
+	f.content = content
+	// TODO(anjmao): clear ast and token only if it's not possible to update it
+	f.ast = nil
+	f.token = nil
+	f.pkg = nil
+	// and we might need to update the overlay
+	switch {
+	case f.active && content == nil:
+		// we were active, and want to forget the content
+		f.active = false
+		if filename, err := f.URI.Filename(); err == nil {
+			delete(f.view.Config.Overlay, filename)
+		}
+		f.content = nil
+	case content != nil:
+		// an active overlay, update the map
+		f.active = true
+		if filename, err := f.URI.Filename(); err == nil {
+			f.view.Config.Overlay[filename] = f.content
+		}
+	}
 }
 
 func (f *File) setContent(content []byte) {
